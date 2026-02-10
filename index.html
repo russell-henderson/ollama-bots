@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ollama Character UI</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="app-bg" aria-hidden="true"></div>
+
+  <header class="app-topbar" aria-label="Global controls">
+    <label for="ollama-model-select" class="model-picker-label">Model</label>
+    <select id="ollama-model-select" class="model-select" aria-label="Select Ollama model">
+      <option value="">No models loaded</option>
+    </select>
+
+    <div class="ollama-inline-status muted">
+      <span id="ollama-connection-state" data-state="checking">Checking Ollama...</span>
+      <span id="ollama-model-summary">Models: --</span>
+    </div>
+  </header>
+
+  <main class="app-shell" aria-label="Ollama character interface">
+    <aside class="panel panel-characters">
+      <header class="panel-header">
+        <h2>Characters</h2>
+        <button id="add-character" class="icon-btn add-btn" type="button" aria-label="Add character">+</button>
+      </header>
+
+      <section id="character-list" class="character-list" aria-label="Character list">
+        <button class="character-card active" type="button">
+          <span class="avatar" aria-hidden="true">C</span>
+          <span>
+            <span class="character-name">Luna</span>
+            <span class="character-model">llama2</span>
+          </span>
+        </button>
+
+        <button class="character-card" type="button">
+          <span class="avatar" aria-hidden="true">O</span>
+          <span>
+            <span class="character-name">Orion</span>
+            <span class="character-model">mistral</span>
+          </span>
+        </button>
+      </section>
+
+      <footer class="panel-footer">
+        <div class="character-actions" aria-label="Character actions">
+          <button id="edit-character" class="mini-btn" type="button">Edit</button>
+          <button id="clone-character" class="mini-btn" type="button">Clone</button>
+          <button id="delete-character" class="mini-btn danger" type="button">Delete</button>
+        </div>
+      </footer>
+    </aside>
+
+    <section class="panel panel-chat">
+      <header class="panel-header panel-header-chat">
+        <div class="chat-title-block">
+          <h2 id="active-character-name"><span id="active-character-label">Luna</span> <span id="active-model-target" class="muted-inline">(no model selected)</span></h2>
+        </div>
+        <div class="header-actions">
+          <details class="header-tools" id="chat-tools">
+            <summary>Conversation Tools</summary>
+            <div class="chat-controls">
+              <label for="branch-select">Branch</label>
+              <select id="branch-select"></select>
+              <button id="new-branch" class="ghost-btn" type="button">New Branch</button>
+              <button id="pin-chat" class="ghost-btn" type="button">Pin Chat</button>
+              <label for="template-select">Starter</label>
+              <select id="template-select"></select>
+              <button id="save-template" class="ghost-btn" type="button">Save Starter</button>
+              <button id="apply-template" class="ghost-btn" type="button">Apply Starter</button>
+              <button id="undo-turn" class="ghost-btn" type="button">Undo Turn</button>
+              <button id="reset-chat" class="ghost-btn" type="button">Reset</button>
+              <input id="conversation-label" type="text" placeholder="Conversation label" />
+              <button id="save-conversation-label" class="ghost-btn" type="button">Save Label</button>
+            </div>
+          </details>
+          <button class="ghost-btn" type="button">Templates</button>
+        </div>
+      </header>
+
+      <div class="chat-top-row">
+        <button id="ollama-retry" class="ghost-btn status-retry" type="button">Retry</button>
+      </div>
+      <p id="ollama-error" class="status-error" role="status" aria-live="polite"></p>
+      <section id="pinned-chats" class="pinned-chats" aria-live="polite"></section>
+      <p id="chat-telemetry" class="muted"></p>
+
+      <div id="chat-log" class="chat-log" aria-live="polite">
+        <article class="message message-user">
+          <p>Can you summarize the meeting notes?</p>
+          <time>10:00 AM</time>
+        </article>
+
+        <article class="message message-assistant">
+          <p>Sure, I to dthat the Prease</p>
+          <time>10:01 AM</time>
+        </article>
+
+        <article class="message message-assistant">
+          <p>Sure, I you to dhat. Please tle lhe document.</p>
+          <time>10:01 AM</time>
+        </article>
+      </div>
+      <section id="ask-all-results" class="ask-all-results" aria-live="polite"></section>
+
+      <div class="composer">
+        <form id="chat-form" class="composer-row chat-input-row">
+          <span class="attach" aria-hidden="true">o</span>
+          <input id="chat-input" type="text" placeholder="Okay, uploading now ..." />
+          <button id="stop-generation" type="button" class="stop-btn" aria-label="Stop generation">Stop</button>
+          <button type="submit" class="send-btn" aria-label="Send">></button>
+        </form>
+      </div>
+    </section>
+
+    <aside class="panel panel-docs">
+      <header class="panel-header">
+        <h2>Documents</h2>
+        <div class="header-actions">
+          <button class="ghost-btn" type="button">Quick Actions</button>
+          <button class="ghost-btn more-btn" type="button" aria-label="More">...</button>
+        </div>
+      </header>
+
+      <section class="doc-section">
+        <h3>Global Library</h3>
+        <button id="ask-all-characters" class="action-row" type="button">Ask All Characters To...</button>
+        <input id="doc-search" class="doc-search" type="search" placeholder="Search documents..." />
+        <button id="upload-docs" class="action-row" type="button">Upload Documents</button>
+        <input id="docs-file-input" type="file" multiple hidden />
+        <div id="docs-library-list" class="docs-library-list" aria-live="polite"></div>
+        <article id="doc-preview" class="doc-preview" aria-live="polite">
+          <h4>Extracted Preview</h4>
+          <p>Select a document to preview extracted text.</p>
+        </article>
+        <div class="chunk-controls">
+          <label for="chunk-strategy">Chunk Strategy</label>
+          <select id="chunk-strategy">
+            <option value="paragraph">Paragraph</option>
+            <option value="token">Token Count</option>
+            <option value="section">Section/Heading</option>
+            <option value="whole">Whole Document</option>
+          </select>
+          <label for="chunk-token-size">Token Size</label>
+          <input id="chunk-token-size" type="number" min="20" max="500" step="10" value="120" />
+          <label for="preprocess-preset">Preprocess Preset</label>
+          <select id="preprocess-preset">
+            <option value="none">None</option>
+            <option value="summarize">Summarize</option>
+            <option value="bullets">Bulleted Notes</option>
+            <option value="qa-clean">Q/A Clean</option>
+          </select>
+          <label for="preprocess-custom">Custom Instructions</label>
+          <textarea id="preprocess-custom" rows="3" placeholder="Optional custom preprocessing instructions"></textarea>
+          <button id="reprocess-doc" class="action-row" type="button">Reprocess Active Document</button>
+          <button id="upload-doc-version" class="action-row" type="button">Upload New Doc Version</button>
+          <input id="doc-version-file-input" type="file" hidden />
+          <label for="doc-version-select">Document Versions</label>
+          <select id="doc-version-select"></select>
+          <button id="activate-doc-version" class="action-row" type="button">Set Active Version</button>
+        </div>
+        <article id="chunk-preview" class="doc-preview" aria-live="polite">
+          <h4>Chunk Preview</h4>
+          <p>Select a document to preview chunk boundaries.</p>
+        </article>
+        <p id="reprocess-status" class="muted"></p>
+      </section>
+
+      <section class="doc-section">
+        <h3>This Character's Docs</h3>
+        <button id="duplicate-conversation" class="action-row" type="button">Duplicate Conversation To...</button>
+        <button id="export-character" class="action-row" type="button">Export Character</button>
+        <button id="import-character" class="action-row" type="button">Import Character</button>
+        <input id="character-import-input" type="file" accept="application/json" hidden />
+        <button id="export-workspace" class="action-row" type="button">Export Workspace</button>
+        <button id="import-workspace" class="action-row" type="button">Import Workspace</button>
+        <input id="workspace-import-input" type="file" accept="application/json" hidden />
+        <div id="character-docs-list" class="docs-library-list" aria-live="polite"></div>
+      </section>
+
+      <div id="upload-dropzone" class="upload-dropzone" role="button" tabindex="0">Drag and drop files here to upload.</div>
+    </aside>
+  </main>
+
+  <dialog id="character-settings-modal" class="settings-modal">
+    <form id="character-settings-form" class="settings-form" method="dialog">
+      <header class="settings-header">
+        <h3>Character Settings</h3>
+      </header>
+
+      <div class="settings-grid">
+        <label class="settings-field">
+          <span>Name</span>
+          <input id="settings-name" name="name" type="text" required />
+        </label>
+
+        <label class="settings-field">
+          <span>Model</span>
+          <input id="settings-model" name="model" type="text" required />
+        </label>
+
+        <label class="settings-field settings-field-full">
+          <span>System Prompt</span>
+          <textarea id="settings-system-prompt" name="systemPrompt" rows="4"></textarea>
+        </label>
+
+        <label class="settings-field">
+          <span>Temperature</span>
+          <input id="settings-temperature" name="temperature" type="number" step="0.1" min="0" max="2" required />
+        </label>
+
+        <label class="settings-field">
+          <span>Top-p</span>
+          <input id="settings-top-p" name="topP" type="number" step="0.01" min="0" max="1" required />
+        </label>
+
+        <label class="settings-field">
+          <span>Top-k</span>
+          <input id="settings-top-k" name="topK" type="number" step="1" min="1" max="200" required />
+        </label>
+
+        <label class="settings-field">
+          <span>Max Tokens</span>
+          <input id="settings-max-tokens" name="maxTokens" type="number" step="1" min="1" max="8192" required />
+        </label>
+
+        <label class="settings-field">
+          <span>Context Window</span>
+          <input id="settings-context-window" name="contextWindow" type="number" step="1" min="256" max="32768" required />
+        </label>
+      </div>
+
+      <p id="settings-error" class="settings-error" role="status" aria-live="polite"></p>
+
+      <footer class="settings-actions">
+        <button id="settings-cancel" class="mini-btn" type="button">Cancel</button>
+        <button class="mini-btn" type="submit">Save</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
