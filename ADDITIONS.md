@@ -1,3 +1,14 @@
+# Additions (Historical Ideation)
+
+This file contains historical feature ideation and implementation sketches.
+
+Current authoritative status has moved to:
+
+- `UPGRADES_TODO.md` for execution tracking
+- `STATUS.md` for snapshot state
+- `UI_RESTRUCTURE.md` for shipped UI phase mapping
+- `MODEL_WIRING.md` for model selection and allowlist behavior
+
 # Additions
 
 ## 1. Document Tags/Folders

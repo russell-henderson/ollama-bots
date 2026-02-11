@@ -1,4 +1,8 @@
-# Ollama Character UI - Concrete Task Board
+# Ollama Character UI - Concrete Task Board (Historical)
+
+This board is retained for completion history.
+
+For active planning and gate tracking, use `UPGRADES_TODO.md`.
 
 Status legend: `[ ]` not started, `[/]` in progress, `[x]` done
 

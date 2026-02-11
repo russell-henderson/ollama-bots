@@ -134,6 +134,14 @@ Ship upgrade features from `ADDITIONS.md`, `INDICATORS.md`, and `STATUS.md` with
 - [ ] `P1` Gate C: Phase 4 stable and verified against context limits.
 - [ ] `P2` Gate D: Phase 5 shipped behind flags, then promoted.
 
+## Documentation Workstream
+
+- [x] `P1/S` Refresh README with current architecture, shortcuts, and doc index.
+- [x] `P1/S` Replace stale UI plan docs with implemented phase status mapping.
+- [x] `P1/S` Add dedicated model wiring reference for allowlist/order/sync behavior.
+- [x] `P1/S` Normalize status and indicator docs to current implementation.
+- [x] `P1/S` Update presentation doc to match shipped UX and feature set.
+
 ## Immediate Action Queue (Next 10 Tasks -> File-by-File)
 
 - [x] 1. Status indicator component shell + CSS primitives
