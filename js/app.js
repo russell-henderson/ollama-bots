@@ -101,7 +101,7 @@ function appendMessage(logNode, role, text, timeText, modelTag) {
 
   logNode.appendChild(article);
   logNode.scrollTop = logNode.scrollHeight;
-  return { article, body };
+  return { article, body, time };
 }
 
 function ensureConversationState(characterId) {
@@ -393,14 +393,17 @@ async function streamAssistantReply(logNode, model, messages, abortSignal, pream
     throw new Error(`Chat request failed with status ${response.status}`);
   }
 
-  const assistantMessage = appendMessage(logNode, "assistant", "Thinking...");
+  const assistantMessage = appendMessage(logNode, "assistant", "");
+  assistantMessage.body.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
   assistantMessage.article.classList.add("thinking");
   const streamStartedAt = performance.now();
   let firstTokenAt = null;
+  
   const thinkingTimer = window.setInterval(() => {
     const elapsedSeconds = (performance.now() - streamStartedAt) / 1000;
-    assistantMessage.body.textContent = `Thinking... ${elapsedSeconds.toFixed(1)}s`;
-  }, 120);
+    assistantMessage.time.textContent = `Thinking (${elapsedSeconds.toFixed(1)}s)`;
+  }, 100);
+
   function stopThinkingState() {
     window.clearInterval(thinkingTimer);
     assistantMessage.article.classList.remove("thinking");
@@ -435,9 +438,12 @@ async function streamAssistantReply(logNode, model, messages, abortSignal, pream
               firstTokenAt = performance.now();
               stopThinkingState();
             }
+            const isAtBottom = (logNode.scrollHeight - logNode.scrollTop - logNode.clientHeight) < 40;
             assembled += token;
             assistantMessage.body.textContent = assembled;
-            logNode.scrollTop = logNode.scrollHeight;
+            if (isAtBottom) {
+              logNode.scrollTop = logNode.scrollHeight;
+            }
           }
         } catch (error) {
           console.error("Failed to parse stream chunk:", error);

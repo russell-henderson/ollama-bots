@@ -128,12 +128,6 @@ body {
 }
 
 .panel-header h2 {
-  font-size: 25px;
-}
-
-.panel-header h2,
-.doc-section h3,
-.character-name {
   letter-spacing: 0.1px;
 }
 
@@ -636,18 +630,31 @@ body {
 }
 
 .message.thinking {
-  animation: thinking-pulse 1.2s ease-in-out infinite;
+  /* No extra pulse needed for bubble itself, handled by dots */
 }
 
-.message.thinking p {
-  color: var(--text-muted);
-  font-style: italic;
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 4px;
 }
 
-@keyframes thinking-pulse {
-  0% { opacity: 0.55; }
-  50% { opacity: 1; }
-  100% { opacity: 0.55; }
+.typing-indicator span {
+  width: 5px;
+  height: 5px;
+  background-color: var(--text-muted);
+  border-radius: 50%;
+  animation: typing-bounce 1.4s infinite ease-in-out both;
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes typing-bounce {
+  0%, 80%, 100% { transform: scale(0); opacity: 0.6; }
+  40% { transform: scale(1.2); opacity: 1; }
 }
 
 .composer {
