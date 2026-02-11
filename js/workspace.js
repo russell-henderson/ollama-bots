@@ -1,5 +1,5 @@
 import { exportDocumentState, importDocumentMetadata } from "./documents.js";
-import { STORAGE_KEYS } from "./storage.js";
+import { STORAGE_KEYS, STORAGE_SCHEMA_VERSION } from "./storage.js";
 
 function byId(id) {
   return document.getElementById(id);
@@ -29,13 +29,16 @@ async function exportWorkspace() {
     associations: []
   }));
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: STORAGE_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
     data: {
+      appSchemaVersion: readRawKey(STORAGE_KEYS.schemaVersion, String(STORAGE_SCHEMA_VERSION)),
       characters: readRawKey(STORAGE_KEYS.characters, "[]"),
       activeCharacter: readRawKey(STORAGE_KEYS.activeCharacter, ""),
+      selectedCharacters: readRawKey(STORAGE_KEYS.selectedCharacters, "[]"),
       conversations: readRawKey(STORAGE_KEYS.conversations, "{}"),
       chatTemplates: readRawKey(STORAGE_KEYS.chatTemplates, "{\"global\":[],\"perCharacter\":{}}"),
+      statusIndicatorMode: readRawKey(STORAGE_KEYS.statusIndicatorMode, ""),
       documentState
     }
   };
@@ -60,16 +63,28 @@ async function importWorkspaceFile(file) {
 
   const characters = typeof payload.data.characters === "string" ? payload.data.characters : "[]";
   const activeCharacter = typeof payload.data.activeCharacter === "string" ? payload.data.activeCharacter : "";
+  const selectedCharacters = typeof payload.data.selectedCharacters === "string" ? payload.data.selectedCharacters : "[]";
   const conversations = typeof payload.data.conversations === "string" ? payload.data.conversations : "{}";
   const chatTemplates = typeof payload.data.chatTemplates === "string" ? payload.data.chatTemplates : "{\"global\":[],\"perCharacter\":{}}";
+  const statusIndicatorMode = typeof payload.data.statusIndicatorMode === "string" ? payload.data.statusIndicatorMode : "";
+  const appSchemaVersion = typeof payload.data.appSchemaVersion === "string"
+    ? payload.data.appSchemaVersion
+    : String(STORAGE_SCHEMA_VERSION);
   const documentState = payload.data.documentState && typeof payload.data.documentState === "object"
     ? payload.data.documentState
     : (Array.isArray(payload.data.documentMetadata) ? payload.data.documentMetadata : []);
 
+  window.localStorage.setItem(STORAGE_KEYS.schemaVersion, appSchemaVersion);
   window.localStorage.setItem(STORAGE_KEYS.characters, characters);
   window.localStorage.setItem(STORAGE_KEYS.activeCharacter, activeCharacter);
+  window.localStorage.setItem(STORAGE_KEYS.selectedCharacters, selectedCharacters);
   window.localStorage.setItem(STORAGE_KEYS.conversations, conversations);
   window.localStorage.setItem(STORAGE_KEYS.chatTemplates, chatTemplates);
+  if (statusIndicatorMode) {
+    window.localStorage.setItem(STORAGE_KEYS.statusIndicatorMode, statusIndicatorMode);
+  } else {
+    window.localStorage.removeItem(STORAGE_KEYS.statusIndicatorMode);
+  }
 
   await importDocumentMetadata(documentState);
 }

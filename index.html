@@ -9,18 +9,6 @@
 <body>
   <div class="app-bg" aria-hidden="true"></div>
 
-  <header class="app-topbar" aria-label="Global controls">
-    <label for="ollama-model-select" class="model-picker-label">Model</label>
-    <select id="ollama-model-select" class="model-select" aria-label="Select Ollama model">
-      <option value="">No models loaded</option>
-    </select>
-
-    <div class="ollama-inline-status muted">
-      <span id="ollama-connection-state" data-state="checking">Checking Ollama...</span>
-      <span id="ollama-model-summary">Models: --</span>
-    </div>
-  </header>
-
   <main class="app-shell" aria-label="Ollama character interface">
     <aside class="panel panel-characters">
       <header class="panel-header">
@@ -48,19 +36,49 @@
 
       <footer class="panel-footer">
         <div class="character-actions" aria-label="Character actions">
+          <button id="manage-groups" class="mini-btn" type="button">Groups</button>
+          <button id="move-character-up" class="mini-btn" type="button">Up</button>
+          <button id="move-character-down" class="mini-btn" type="button">Down</button>
           <button id="edit-character" class="mini-btn" type="button">Edit</button>
           <button id="clone-character" class="mini-btn" type="button">Clone</button>
           <button id="delete-character" class="mini-btn danger" type="button">Delete</button>
         </div>
       </footer>
+      <div class="sidebar-footer">
+        <div class="ollama-status-compact muted">
+          <span id="ollama-connection-state" data-state="checking">Checking Ollama...</span>
+          <span id="ollama-model-summary">Models: --</span>
+        </div>
+      </div>
     </aside>
 
     <section class="panel panel-chat">
       <header class="panel-header panel-header-chat">
         <div class="chat-title-block">
           <h2 id="active-character-name"><span id="active-character-label">Luna</span> <span id="active-model-target" class="muted-inline">(no model selected)</span></h2>
+          <div class="chat-model-picker">
+            <label for="quick-model-select">Model</label>
+            <select id="quick-model-select" aria-label="Select model for active character">
+              <option value="">No models loaded</option>
+            </select>
+            <span id="quick-model-size-badge" class="model-size-badge">size n/a</span>
+          </div>
         </div>
         <div class="header-actions">
+          <div class="mobile-panel-toggles" aria-label="Mobile panel toggles">
+            <button id="open-characters-panel" class="ghost-btn mini-mobile-btn" type="button" aria-label="Open characters">Characters</button>
+            <button id="open-docs-panel" class="ghost-btn mini-mobile-btn" type="button" aria-label="Open documents">Documents</button>
+          </div>
+          <button id="analytics-toggle" class="pill-button" type="button" aria-expanded="false" aria-controls="analytics-panel">
+            <span class="pill-label">Analytics</span>
+            <span id="analytics-badge" class="pill-badge">0 msgs</span>
+            <span class="pill-arrow">▼</span>
+          </button>
+          <button id="context-toggle" class="pill-button" type="button" aria-expanded="false" aria-controls="context-panel">
+            <span class="pill-label">Context</span>
+            <span id="context-badge" class="pill-badge">0%</span>
+            <span class="pill-arrow">▼</span>
+          </button>
           <details class="header-tools" id="chat-tools">
             <summary>Conversation Tools</summary>
             <div class="chat-controls">
@@ -88,6 +106,51 @@
       <p id="ollama-error" class="status-error" role="status" aria-live="polite"></p>
       <section id="pinned-chats" class="pinned-chats" aria-live="polite"></section>
       <p id="chat-telemetry" class="muted"></p>
+      <div id="analytics-panel" class="collapsible-panel" aria-hidden="true">
+        <section id="analytics-dashboard" class="analytics-dashboard" aria-live="polite">
+          <header class="analytics-header">
+            <h3>Usage Analytics</h3>
+            <button id="refresh-analytics" class="mini-btn" type="button">Refresh</button>
+          </header>
+          <div id="analytics-summary" class="analytics-grid"></div>
+        </section>
+      </div>
+      <div id="context-panel" class="collapsible-panel" aria-hidden="true">
+        <section id="context-usage-panel" class="context-usage-panel" aria-live="polite">
+          <header class="analytics-header">
+            <h3>Context Usage</h3>
+          </header>
+          <div class="context-usage-bar">
+            <div id="context-usage-fill" class="context-usage-fill"></div>
+          </div>
+          <p id="context-usage-text" class="muted"></p>
+          <div id="context-usage-docs" class="context-usage-docs"></div>
+        </section>
+      </div>
+      <section id="ai-status" class="ai-status-container" role="status" aria-live="polite" aria-atomic="true" hidden>
+        <div id="status-orb" class="status-orb stage-receiving" aria-hidden="true">
+          <div class="orb-core"></div>
+          <div class="orb-rings" id="status-rings"></div>
+          <div class="orb-resources" id="orb-resources"></div>
+        </div>
+        <div id="status-linear" class="status-linear" aria-hidden="true">
+          <div class="status-linear-bar">
+            <div id="status-linear-fill" class="status-linear-fill"></div>
+          </div>
+          <div id="status-linear-stages" class="status-linear-stages">
+            <span data-stage="receiving">Receiving</span>
+            <span data-stage="thinking">Thinking</span>
+            <span data-stage="resources">Resources</span>
+            <span data-stage="responding">Responding</span>
+          </div>
+        </div>
+        <div class="status-text">
+          <span class="status-label" id="status-label">Receiving...</span>
+          <span class="status-detail" id="status-detail"></span>
+        </div>
+        <button class="status-mode-toggle" id="status-mode-toggle" type="button">Orb</button>
+        <button class="status-stop" id="status-stop-btn" type="button" hidden>Stop</button>
+      </section>
 
       <div id="chat-log" class="chat-log" aria-live="polite">
         <article class="message message-user">
@@ -119,72 +182,110 @@
 
     <aside class="panel panel-docs">
       <header class="panel-header">
-        <h2>Documents</h2>
+        <div class="docs-tab-group" role="tablist" aria-label="Documents tabs">
+          <button id="docs-tab-btn" class="docs-tab active" type="button" role="tab" aria-selected="true" aria-controls="docs-tab">Documents</button>
+          <button id="quick-actions-tab-btn" class="docs-tab" type="button" role="tab" aria-selected="false" aria-controls="quick-actions-tab">Quick Actions</button>
+        </div>
         <div class="header-actions">
-          <button class="ghost-btn" type="button">Quick Actions</button>
           <button class="ghost-btn more-btn" type="button" aria-label="More">...</button>
         </div>
       </header>
 
-      <section class="doc-section">
+      <section id="docs-tab" class="doc-tab-content active" role="tabpanel" aria-labelledby="docs-tab-btn">
+        <div class="doc-section">
         <h3>Global Library</h3>
-        <button id="ask-all-characters" class="action-row" type="button">Ask All Characters To...</button>
         <input id="doc-search" class="doc-search" type="search" placeholder="Search documents..." />
+        <input id="doc-folder-filter" class="doc-search" type="search" placeholder="Filter by folder path..." />
+        <div id="doc-tag-filters" class="doc-tag-filters" aria-live="polite"></div>
+        <div id="doc-folder-tree" class="doc-folder-tree" aria-live="polite"></div>
         <button id="upload-docs" class="action-row" type="button">Upload Documents</button>
         <input id="docs-file-input" type="file" multiple hidden />
         <div id="docs-library-list" class="docs-library-list" aria-live="polite"></div>
-        <article id="doc-preview" class="doc-preview" aria-live="polite">
-          <h4>Extracted Preview</h4>
-          <p>Select a document to preview extracted text.</p>
-        </article>
-        <div class="chunk-controls">
-          <label for="chunk-strategy">Chunk Strategy</label>
-          <select id="chunk-strategy">
-            <option value="paragraph">Paragraph</option>
-            <option value="token">Token Count</option>
-            <option value="section">Section/Heading</option>
-            <option value="whole">Whole Document</option>
-          </select>
-          <label for="chunk-token-size">Token Size</label>
-          <input id="chunk-token-size" type="number" min="20" max="500" step="10" value="120" />
-          <label for="preprocess-preset">Preprocess Preset</label>
-          <select id="preprocess-preset">
-            <option value="none">None</option>
-            <option value="summarize">Summarize</option>
-            <option value="bullets">Bulleted Notes</option>
-            <option value="qa-clean">Q/A Clean</option>
-          </select>
-          <label for="preprocess-custom">Custom Instructions</label>
-          <textarea id="preprocess-custom" rows="3" placeholder="Optional custom preprocessing instructions"></textarea>
-          <button id="reprocess-doc" class="action-row" type="button">Reprocess Active Document</button>
-          <button id="upload-doc-version" class="action-row" type="button">Upload New Doc Version</button>
-          <input id="doc-version-file-input" type="file" hidden />
-          <label for="doc-version-select">Document Versions</label>
-          <select id="doc-version-select"></select>
-          <button id="activate-doc-version" class="action-row" type="button">Set Active Version</button>
+        <details class="doc-disclosure">
+          <summary>Preview and Chunking</summary>
+          <article id="doc-preview" class="doc-preview" aria-live="polite">
+            <h4>Extracted Preview</h4>
+            <p>Select a document to preview extracted text.</p>
+          </article>
+          <div class="chunk-controls">
+            <label for="chunk-strategy">Chunk Strategy</label>
+            <select id="chunk-strategy">
+              <option value="paragraph">Paragraph</option>
+              <option value="token">Token Count</option>
+              <option value="section">Section/Heading</option>
+              <option value="whole">Whole Document</option>
+            </select>
+            <label for="chunk-token-size">Token Size</label>
+            <input id="chunk-token-size" type="number" min="20" max="500" step="10" value="120" />
+            <label for="preprocess-preset">Preprocess Preset</label>
+            <select id="preprocess-preset">
+              <option value="none">None</option>
+              <option value="summarize">Summarize</option>
+              <option value="bullets">Bulleted Notes</option>
+              <option value="qa-clean">Q/A Clean</option>
+            </select>
+            <label for="preprocess-custom">Custom Instructions</label>
+            <textarea id="preprocess-custom" rows="3" placeholder="Optional custom preprocessing instructions"></textarea>
+            <button id="reprocess-doc" class="action-row" type="button">Reprocess Active Document</button>
+            <button id="upload-doc-version" class="action-row" type="button">Upload New Doc Version</button>
+            <input id="doc-version-file-input" type="file" hidden />
+            <label for="doc-version-select">Document Versions</label>
+            <select id="doc-version-select"></select>
+            <button id="activate-doc-version" class="action-row" type="button">Set Active Version</button>
+          </div>
+          <article id="chunk-preview" class="doc-preview" aria-live="polite">
+            <h4>Chunk Preview</h4>
+            <p>Select a document to preview chunk boundaries.</p>
+          </article>
+        </details>
+        <div class="doc-meta-editor">
+          <h4>Active Doc Tags and Folder</h4>
+          <label for="doc-folder-input">Folder</label>
+          <input id="doc-folder-input" type="text" placeholder="Projects/Q4-2026" />
+          <label for="doc-tags-input">Tags (comma separated)</label>
+          <input id="doc-tags-input" type="text" placeholder="finance, quarterly, project-alpha" />
+          <button id="save-doc-meta" class="action-row" type="button">Save Tags and Folder</button>
         </div>
-        <article id="chunk-preview" class="doc-preview" aria-live="polite">
-          <h4>Chunk Preview</h4>
-          <p>Select a document to preview chunk boundaries.</p>
-        </article>
+        <div class="doc-meta-editor">
+          <h4>Bulk Update Selected Docs</h4>
+          <label for="bulk-doc-folder-input">Folder (optional)</label>
+          <input id="bulk-doc-folder-input" type="text" placeholder="Projects/Q4-2026" />
+          <label for="bulk-doc-tags-input">Tags (comma separated)</label>
+          <input id="bulk-doc-tags-input" type="text" placeholder="research, roadmap" />
+          <label for="bulk-doc-mode">Tag Mode</label>
+          <select id="bulk-doc-mode">
+            <option value="append">Append tags</option>
+            <option value="replace">Replace tags</option>
+          </select>
+          <button id="apply-bulk-doc-meta" class="action-row" type="button">Apply To Selected</button>
+          <button id="clear-bulk-doc-selection" class="action-row" type="button">Clear Selection</button>
+        </div>
         <p id="reprocess-status" class="muted"></p>
+        </div>
       </section>
 
-      <section class="doc-section">
-        <h3>This Character's Docs</h3>
+      <section id="quick-actions-tab" class="doc-tab-content" role="tabpanel" aria-labelledby="quick-actions-tab-btn" hidden>
+        <div class="doc-section">
+        <h3>Quick Actions</h3>
+        <button id="ask-all-characters" class="action-row" type="button">Ask All Characters To...</button>
         <button id="duplicate-conversation" class="action-row" type="button">Duplicate Conversation To...</button>
+        <button id="open-prompt-chains" class="action-row" type="button">Prompt Chains</button>
+        <button id="open-advanced-export" class="action-row" type="button">Advanced Export</button>
         <button id="export-character" class="action-row" type="button">Export Character</button>
         <button id="import-character" class="action-row" type="button">Import Character</button>
         <input id="character-import-input" type="file" accept="application/json" hidden />
         <button id="export-workspace" class="action-row" type="button">Export Workspace</button>
         <button id="import-workspace" class="action-row" type="button">Import Workspace</button>
         <input id="workspace-import-input" type="file" accept="application/json" hidden />
+        <h3>This Character's Docs</h3>
         <div id="character-docs-list" class="docs-library-list" aria-live="polite"></div>
+        </div>
       </section>
 
       <div id="upload-dropzone" class="upload-dropzone" role="button" tabindex="0">Drag and drop files here to upload.</div>
     </aside>
   </main>
+  <button id="mobile-drawer-backdrop" class="mobile-drawer-backdrop" type="button" aria-label="Close side panels" hidden></button>
 
   <dialog id="character-settings-modal" class="settings-modal">
     <form id="character-settings-form" class="settings-form" method="dialog">
@@ -200,7 +301,9 @@
 
         <label class="settings-field">
           <span>Model</span>
-          <input id="settings-model" name="model" type="text" required />
+          <select id="settings-model" name="model" required>
+            <option value="">No models loaded</option>
+          </select>
         </label>
 
         <label class="settings-field settings-field-full">
@@ -240,6 +343,117 @@
         <button id="settings-cancel" class="mini-btn" type="button">Cancel</button>
         <button class="mini-btn" type="submit">Save</button>
       </footer>
+    </form>
+  </dialog>
+
+  <dialog id="command-palette-modal" class="settings-modal">
+    <form id="command-palette-form" class="settings-form" method="dialog">
+      <header class="settings-header">
+        <h3>Command Palette</h3>
+      </header>
+      <label class="settings-field settings-field-full">
+        <span>Search commands</span>
+        <input id="command-palette-input" type="text" autocomplete="off" placeholder="Type a command..." />
+      </label>
+      <div id="command-palette-list" class="docs-library-list" aria-live="polite"></div>
+      <footer class="settings-actions">
+        <button id="command-palette-close" class="mini-btn" type="button">Close</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="conversation-search-modal" class="settings-modal">
+    <form id="conversation-search-form" class="settings-form" method="dialog">
+      <header class="settings-header">
+        <h3>Conversation Search</h3>
+      </header>
+      <div class="settings-grid">
+        <label class="settings-field settings-field-full">
+          <span>Query</span>
+          <input id="conversation-search-query" type="text" autocomplete="off" placeholder="Search message text..." />
+        </label>
+        <label class="settings-field">
+          <span>Character</span>
+          <select id="conversation-search-character"></select>
+        </label>
+        <label class="settings-field">
+          <span>Document name contains</span>
+          <input id="conversation-search-docs" type="text" placeholder="Optional filter" />
+        </label>
+        <label class="settings-field">
+          <span>Date From</span>
+          <input id="conversation-search-from" type="date" />
+        </label>
+        <label class="settings-field">
+          <span>Date To</span>
+          <input id="conversation-search-to" type="date" />
+        </label>
+      </div>
+      <div id="conversation-search-results" class="docs-library-list" aria-live="polite"></div>
+      <footer class="settings-actions">
+        <button id="conversation-search-close" class="mini-btn" type="button">Close</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="prompt-chain-modal" class="settings-modal">
+    <form id="prompt-chain-form" class="settings-form" method="dialog">
+      <header class="settings-header">
+        <h3>Prompt Chains</h3>
+      </header>
+      <label class="settings-field settings-field-full">
+        <span>Chain Name</span>
+        <input id="chain-name" type="text" placeholder="Research Follow-up" />
+      </label>
+      <label class="settings-field settings-field-full">
+        <span>Seed Variables (JSON object)</span>
+        <textarea id="chain-vars" rows="3" placeholder="{&quot;topic&quot;:&quot;Quarterly results&quot;}"></textarea>
+      </label>
+      <label class="settings-field settings-field-full">
+        <span>Steps (one per line, use <code>{{var}}</code>; optional <code>var = prompt</code>)</span>
+        <textarea id="chain-steps" rows="8" placeholder="outline = Create a 5-point outline for {{topic}}&#10;Expand point 1 from {{outline}}"></textarea>
+      </label>
+      <div class="settings-actions">
+        <button id="chain-save" class="mini-btn" type="button">Save</button>
+        <button id="chain-run" class="mini-btn" type="button">Run</button>
+        <button id="chain-retry" class="mini-btn" type="button">Retry Failed</button>
+        <button id="chain-resume" class="mini-btn" type="button">Resume</button>
+        <button id="chain-close" class="mini-btn" type="button">Close</button>
+      </div>
+      <p id="chain-status" class="muted"></p>
+      <div id="chain-progress" class="docs-library-list" aria-live="polite"></div>
+    </form>
+  </dialog>
+
+  <dialog id="advanced-export-modal" class="settings-modal">
+    <form id="advanced-export-form" class="settings-form" method="dialog">
+      <header class="settings-header">
+        <h3>Advanced Export</h3>
+      </header>
+      <div class="settings-grid">
+        <label class="settings-field">
+          <span>Profile</span>
+          <select id="advanced-export-profile">
+            <option value="markdown">Markdown</option>
+            <option value="html">HTML</option>
+            <option value="pdf">PDF</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span>Filename Prefix</span>
+          <input id="advanced-export-name" type="text" placeholder="conversation-export" />
+        </label>
+      </div>
+      <label class="settings-field settings-field-full"><span><input id="export-include-metadata" type="checkbox" checked /> Include branch metadata</span></label>
+      <label class="settings-field settings-field-full"><span><input id="export-include-time" type="checkbox" checked /> Include timestamps</span></label>
+      <label class="settings-field settings-field-full"><span><input id="export-include-ratings" type="checkbox" checked /> Include ratings</span></label>
+      <label class="settings-field settings-field-full"><span><input id="export-include-annotations" type="checkbox" checked /> Include annotations</span></label>
+      <label class="settings-field settings-field-full"><span><input id="export-include-context" type="checkbox" checked /> Include context usage panel data</span></label>
+      <footer class="settings-actions">
+        <button id="advanced-export-run" class="mini-btn" type="button">Export</button>
+        <button id="advanced-export-close" class="mini-btn" type="button">Close</button>
+      </footer>
+      <p id="advanced-export-status" class="muted"></p>
     </form>
   </dialog>
 

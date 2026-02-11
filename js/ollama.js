@@ -1,7 +1,19 @@
 const OLLAMA_BASE_URL = "http://localhost:11434";
 let selectedModel = "";
+const FORCE_INCLUDED_MODELS = [
+  "MartinRizzo/Regent-Dominique:24b",
+  "thirdeyeai/DeepSeek-R1-Distill-Qwen-7B-uncensored:Q4_0",
+  "hirdeyeai/DeepSeek-R1-Distill-Qwen-7B-uncensored:Q4_0",
+  "wizard-vicuna-uncensored:7b",
+  "dolphin-phi:2.7b"
+];
 const EXCLUDED_MODEL_PATTERNS = [/qwen/i];
 const PREFERRED_MODEL_ORDER = [
+  "MartinRizzo/Regent-Dominique:24b",
+  "thirdeyeai/DeepSeek-R1-Distill-Qwen-7B-uncensored:Q4_0",
+  "hirdeyeai/DeepSeek-R1-Distill-Qwen-7B-uncensored:Q4_0",
+  "wizard-vicuna-uncensored:7b",
+  "dolphin-phi:2.7b",
   "huihui_ai/Hermes-3-Llama-3.2-abliterated:3b",
   "mdq100/Gemma3-Instruct-Abliterated:12b"
 ];
@@ -18,6 +30,9 @@ function formatModelLine(model) {
 
 function shouldExcludeModel(name) {
   const text = String(name || "");
+  if (FORCE_INCLUDED_MODELS.includes(text)) {
+    return false;
+  }
   return EXCLUDED_MODEL_PATTERNS.some((pattern) => pattern.test(text));
 }
 
@@ -127,10 +142,11 @@ export function initOllama() {
   const summaryNode = byId("ollama-model-summary");
   const errorNode = byId("ollama-error");
   const retryButton = byId("ollama-retry");
-  const modelSelect = byId("ollama-model-select");
+  const settingsModelSelect = byId("settings-model") || byId("ollama-model-select");
+  const quickModelSelect = byId("quick-model-select");
   const activeModelTarget = byId("active-model-target");
 
-  if (!stateNode || !summaryNode || !errorNode || !retryButton || !modelSelect) {
+  if (!stateNode || !summaryNode || !errorNode || !retryButton || !settingsModelSelect) {
     return null;
   }
 
@@ -144,7 +160,11 @@ export function initOllama() {
 
     try {
       const models = await checkOllama();
-      populateModelSelect(modelSelect, models, activeModelTarget);
+      populateModelSelect(settingsModelSelect, models, activeModelTarget);
+      if (quickModelSelect) {
+        populateModelSelect(quickModelSelect, models, null);
+      }
+      document.dispatchEvent(new CustomEvent("ollama:models-updated"));
       setStatus(stateNode, summaryNode, errorNode, {
         state: "online",
         label: "Ollama connected",
@@ -152,7 +172,11 @@ export function initOllama() {
         error: ""
       });
     } catch (error) {
-      populateModelSelect(modelSelect, [], activeModelTarget);
+      populateModelSelect(settingsModelSelect, [], activeModelTarget);
+      if (quickModelSelect) {
+        populateModelSelect(quickModelSelect, [], null);
+      }
+      document.dispatchEvent(new CustomEvent("ollama:models-updated"));
       setStatus(stateNode, summaryNode, errorNode, {
         state: "offline",
         label: "Ollama unavailable",
@@ -164,10 +188,19 @@ export function initOllama() {
     }
   }
 
-  modelSelect.addEventListener("change", () => {
-    selectedModel = modelSelect.value;
+  settingsModelSelect.addEventListener("change", () => {
+    selectedModel = settingsModelSelect.value;
     syncActiveTarget(activeModelTarget);
   });
+  if (quickModelSelect) {
+    quickModelSelect.addEventListener("change", () => {
+      selectedModel = quickModelSelect.value;
+      syncActiveTarget(activeModelTarget);
+    });
+  }
+  if (activeModelTarget) {
+    syncActiveTarget(activeModelTarget);
+  }
 
   retryButton.addEventListener("click", refreshStatus);
   refreshStatus();

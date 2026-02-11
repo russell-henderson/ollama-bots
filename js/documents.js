@@ -1,10 +1,12 @@
 const DOCUMENT_DB_NAME = "ollama.documents.db";
-const DOCUMENT_DB_VERSION = 1;
+const DOCUMENT_DB_VERSION = 2;
 
 let documentDb = null;
 let dbOpenPromise = null;
 let pdfjsLibPromise = null;
 let mammothPromise = null;
+const DOC_LIBRARY_FILTERS_KEY = "ollama.app.v3.documentLibrary.filters";
+const DOC_SCORING_WORKER_TIMEOUT_MS = 1200;
 
 function ensureStore(db, storeName, options) {
   if (!db.objectStoreNames.contains(storeName)) {
@@ -42,6 +44,10 @@ function runMigrations(db, oldVersion) {
     ensureIndex(associationsStore, "by_character_id", "characterId", { unique: false });
     ensureIndex(associationsStore, "by_doc_id", "docId", { unique: false });
     ensureIndex(associationsStore, "by_character_and_doc", ["characterId", "docId"], { unique: false });
+  }
+
+  if (oldVersion < 2) {
+    // v2 stores tags/folder directly on docs records; no structural store changes required.
   }
 }
 
@@ -114,6 +120,48 @@ function bytesLabel(size) {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function normalizeTags(value) {
+  const list = Array.isArray(value)
+    ? value
+    : String(value || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  const unique = Array.from(new Set(list.map((item) => item.toLowerCase())));
+  return unique.sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeFolder(value) {
+  return String(value || "").trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+function readLibraryFilters() {
+  try {
+    const raw = window.localStorage.getItem(DOC_LIBRARY_FILTERS_KEY);
+    if (!raw) {
+      return { search: "", folder: "", tags: [] };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      search: String(parsed && parsed.search ? parsed.search : ""),
+      folder: normalizeFolder(parsed && parsed.folder ? parsed.folder : ""),
+      tags: normalizeTags(parsed && parsed.tags ? parsed.tags : [])
+    };
+  } catch (error) {
+    console.error("Failed to read document library filters:", error);
+    return { search: "", folder: "", tags: [] };
+  }
+}
+
+function writeLibraryFilters(filters) {
+  const payload = {
+    search: String(filters && filters.search ? filters.search : ""),
+    folder: normalizeFolder(filters && filters.folder ? filters.folder : ""),
+    tags: normalizeTags(filters && filters.tags ? filters.tags : [])
+  };
+  window.localStorage.setItem(DOC_LIBRARY_FILTERS_KEY, JSON.stringify(payload));
 }
 
 function dateLabel(iso) {
@@ -397,7 +445,7 @@ async function listDocuments() {
   const transaction = db.transaction(["docs"], "readonly");
   const store = transaction.objectStore("docs");
   const records = await requestToPromise(store.getAll());
-  return Array.isArray(records) ? records : [];
+  return (Array.isArray(records) ? records : []).map(normalizeDocumentRecord);
 }
 
 async function getDocumentById(docId) {
@@ -405,7 +453,7 @@ async function getDocumentById(docId) {
   const transaction = db.transaction(["docs"], "readonly");
   const store = transaction.objectStore("docs");
   const doc = await requestToPromise(store.get(docId));
-  return doc || null;
+  return doc ? normalizeDocumentRecord(doc) : null;
 }
 
 async function patchDocument(docId, patch) {
@@ -419,11 +467,20 @@ async function patchDocument(docId, patch) {
   const merged = {
     ...existing,
     ...patch,
+    tags: normalizeTags((patch && Object.prototype.hasOwnProperty.call(patch, "tags")) ? patch.tags : existing.tags),
+    folder: normalizeFolder((patch && Object.prototype.hasOwnProperty.call(patch, "folder")) ? patch.folder : existing.folder),
     updatedAt: new Date().toISOString()
   };
   store.put(merged);
   await transactionDone(transaction);
-  return merged;
+  return normalizeDocumentRecord(merged);
+}
+
+function normalizeDocumentRecord(doc) {
+  const record = { ...(doc || {}) };
+  record.tags = normalizeTags(record.tags);
+  record.folder = normalizeFolder(record.folder);
+  return record;
 }
 
 async function addDocumentsFromFiles(files) {
@@ -448,6 +505,8 @@ async function addDocumentsFromFiles(files) {
         preprocessPreset: "none",
         preprocessCustom: "",
         processedText: parsed.extractedText,
+        tags: [],
+        folder: "",
         activeVersionId: "",
         lastChunkStrategy: "paragraph",
         lastTokenSize: 120,
@@ -743,13 +802,19 @@ async function pinAssociationVersion(characterId, docId, versionId) {
   await transactionDone(transaction);
 }
 
-function filterDocuments(records, query) {
+function filterDocuments(records, query, folderQuery, selectedTags) {
   const term = String(query || "").trim().toLowerCase();
+  const folderTerm = normalizeFolder(folderQuery).toLowerCase();
+  const tags = Array.isArray(selectedTags) ? selectedTags : [];
   const sorted = [...records].sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
-  if (!term) {
-    return sorted;
-  }
-  return sorted.filter((item) => String(item.name || "").toLowerCase().includes(term));
+  return sorted.filter((item) => {
+    const nameMatch = !term || String(item.name || "").toLowerCase().includes(term);
+    const folderValue = String(item.folder || "").toLowerCase();
+    const folderMatch = !folderTerm || folderValue === folderTerm || folderValue.startsWith(`${folderTerm}/`);
+    const itemTags = normalizeTags(item.tags);
+    const tagsMatch = !tags.length || tags.every((tag) => itemTags.includes(tag));
+    return nameMatch && folderMatch && tagsMatch;
+  });
 }
 
 function buildBadgeText(docId, assignedDocIds, assignmentCounts) {
@@ -762,10 +827,103 @@ function buildBadgeText(docId, assignedDocIds, assignmentCounts) {
   return badges.join(" | ");
 }
 
-function renderDocuments(listNode, records, searchText) {
-  const assignedDocIds = arguments[3] instanceof Set ? arguments[3] : new Set();
-  const assignmentCounts = arguments[4] instanceof Map ? arguments[4] : new Map();
-  const filtered = filterDocuments(records, searchText);
+function buildFolderTree(records) {
+  const root = { name: "", path: "", count: 0, children: new Map() };
+  const docs = Array.isArray(records) ? records : [];
+
+  docs.forEach((doc) => {
+    root.count += 1;
+    const folder = normalizeFolder(doc && doc.folder);
+    if (!folder) {
+      return;
+    }
+    const parts = folder.split("/").filter(Boolean);
+    let current = root;
+    let path = "";
+    parts.forEach((part) => {
+      path = path ? `${path}/${part}` : part;
+      if (!current.children.has(part)) {
+        current.children.set(part, { name: part, path, count: 0, children: new Map() });
+      }
+      current = current.children.get(part);
+      current.count += 1;
+    });
+  });
+
+  return root;
+}
+
+function sortFolderChildren(node) {
+  const entries = Array.from(node.children.values()).sort((a, b) => a.name.localeCompare(b.name));
+  entries.forEach((item) => sortFolderChildren(item));
+  node.children = entries;
+  return node;
+}
+
+function renderFolderTree(container, records, selectedFolder, collapsedPaths) {
+  if (!container) {
+    return;
+  }
+  container.innerHTML = "";
+  const normalizedSelected = normalizeFolder(selectedFolder);
+  const tree = sortFolderChildren(buildFolderTree(records));
+
+  const rootRow = document.createElement("div");
+  rootRow.className = normalizedSelected ? "folder-tree-row" : "folder-tree-row active";
+  const spacer = document.createElement("span");
+  spacer.className = "folder-tree-spacer";
+  rootRow.appendChild(spacer);
+  const rootSelect = document.createElement("button");
+  rootSelect.type = "button";
+  rootSelect.className = "folder-tree-select";
+  rootSelect.dataset.folderPath = "";
+  rootSelect.textContent = `Root (${tree.count})`;
+  rootRow.appendChild(rootSelect);
+  container.appendChild(rootRow);
+
+  const renderNode = (node, depth) => {
+    const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+    const isCollapsed = collapsedPaths.has(node.path);
+    const row = document.createElement("div");
+    row.className = node.path === normalizedSelected ? "folder-tree-row active" : "folder-tree-row";
+    row.style.paddingLeft = `${4 + (depth * 14)}px`;
+
+    if (hasChildren) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "folder-tree-toggle";
+      toggle.dataset.togglePath = node.path;
+      toggle.textContent = isCollapsed ? "+" : "-";
+      row.appendChild(toggle);
+    } else {
+      const nodeSpacer = document.createElement("span");
+      nodeSpacer.className = "folder-tree-spacer";
+      row.appendChild(nodeSpacer);
+    }
+
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "folder-tree-select";
+    select.dataset.folderPath = node.path;
+    select.textContent = `${node.name} (${node.count})`;
+    row.appendChild(select);
+    container.appendChild(row);
+
+    if (!isCollapsed && hasChildren) {
+      node.children.forEach((child) => renderNode(child, depth + 1));
+    }
+  };
+
+  tree.children.forEach((node) => renderNode(node, 0));
+}
+
+function renderDocuments(listNode, records, searchText, folderFilter, selectedTags, assignedDocIds, assignmentCounts, selectedDocIds) {
+  const assigned = assignedDocIds instanceof Set ? assignedDocIds : new Set();
+  const counts = assignmentCounts instanceof Map ? assignmentCounts : new Map();
+  const selected = selectedDocIds instanceof Set ? selectedDocIds : new Set();
+  const effectiveFolderFilter = typeof folderFilter === "string" ? folderFilter : "";
+  const effectiveSelectedTags = Array.isArray(selectedTags) ? selectedTags : [];
+  const filtered = filterDocuments(records, searchText, effectiveFolderFilter, effectiveSelectedTags);
   listNode.innerHTML = "";
 
   if (!filtered.length) {
@@ -791,7 +949,9 @@ function renderDocuments(listNode, records, searchText) {
 
     const badges = document.createElement("small");
     badges.className = "doc-badges";
-    badges.textContent = buildBadgeText(doc.id, assignedDocIds, assignmentCounts);
+    const tagsLabel = normalizeTags(doc.tags).slice(0, 4).join(", ");
+    const folderLabel = doc.folder ? `folder:${doc.folder}` : "folder:root";
+    badges.textContent = `${buildBadgeText(doc.id, assigned, counts)} | ${folderLabel}${tagsLabel ? ` | tags:${tagsLabel}` : ""}`;
     info.appendChild(badges);
 
     row.appendChild(info);
@@ -804,10 +964,23 @@ function renderDocuments(listNode, records, searchText) {
     const assign = document.createElement("button");
     assign.type = "button";
     assign.className = "doc-assign";
-    assign.textContent = assignedDocIds.has(doc.id) ? "Unassign" : "Assign";
+    assign.textContent = assigned.has(doc.id) ? "Unassign" : "Assign";
+
+    const selectWrap = document.createElement("label");
+    selectWrap.className = "doc-select";
+    const selectInput = document.createElement("input");
+    selectInput.type = "checkbox";
+    selectInput.className = "doc-select-toggle";
+    selectInput.dataset.docId = doc.id;
+    selectInput.checked = selected.has(doc.id);
+    const selectText = document.createElement("span");
+    selectText.textContent = "Select";
+    selectWrap.appendChild(selectInput);
+    selectWrap.appendChild(selectText);
 
     const actions = document.createElement("span");
     actions.className = "doc-actions";
+    actions.appendChild(selectWrap);
     actions.appendChild(assign);
     actions.appendChild(remove);
     row.appendChild(actions);
@@ -846,7 +1019,9 @@ function renderCharacterDocuments(listNode, records, assignedDocIds) {
     badges.className = "doc-badges";
     const assignment = assignmentMap.get(doc.id);
     const pinned = assignment && assignment.pinnedVersionId ? ` | pinned:${assignment.pinnedVersionId}` : "";
-    badges.textContent = `${buildBadgeText(doc.id, assigned, assignmentCounts)}${pinned}`;
+    const tagsLabel = normalizeTags(doc.tags).slice(0, 4).join(", ");
+    const folderLabel = doc.folder ? `folder:${doc.folder}` : "folder:root";
+    badges.textContent = `${buildBadgeText(doc.id, assigned, assignmentCounts)} | ${folderLabel}${tagsLabel ? ` | tags:${tagsLabel}` : ""}${pinned}`;
     info.appendChild(badges);
 
     row.appendChild(info);
@@ -927,6 +1102,9 @@ function initLibraryUi() {
   const uploadButton = document.getElementById("upload-docs");
   const fileInput = document.getElementById("docs-file-input");
   const searchInput = document.getElementById("doc-search");
+  const folderFilterInput = document.getElementById("doc-folder-filter");
+  const tagFiltersNode = document.getElementById("doc-tag-filters");
+  const folderTreeNode = document.getElementById("doc-folder-tree");
   const dropzone = document.getElementById("upload-dropzone");
   const previewNode = document.getElementById("doc-preview");
   const chunkPreviewNode = document.getElementById("chunk-preview");
@@ -940,8 +1118,16 @@ function initLibraryUi() {
   const versionFileInput = document.getElementById("doc-version-file-input");
   const versionSelect = document.getElementById("doc-version-select");
   const activateVersionButton = document.getElementById("activate-doc-version");
+  const docFolderInput = document.getElementById("doc-folder-input");
+  const docTagsInput = document.getElementById("doc-tags-input");
+  const saveDocMetaButton = document.getElementById("save-doc-meta");
+  const bulkDocFolderInput = document.getElementById("bulk-doc-folder-input");
+  const bulkDocTagsInput = document.getElementById("bulk-doc-tags-input");
+  const bulkDocMode = document.getElementById("bulk-doc-mode");
+  const applyBulkDocMetaButton = document.getElementById("apply-bulk-doc-meta");
+  const clearBulkDocSelectionButton = document.getElementById("clear-bulk-doc-selection");
   const characterListNode = document.getElementById("character-docs-list");
-  if (!listNode || !uploadButton || !fileInput || !searchInput || !dropzone || !previewNode || !characterListNode || !chunkPreviewNode || !chunkStrategyNode || !tokenSizeNode || !preprocessPresetNode || !preprocessCustomNode || !reprocessButton || !reprocessStatusNode || !uploadVersionButton || !versionFileInput || !versionSelect || !activateVersionButton) {
+  if (!listNode || !uploadButton || !fileInput || !searchInput || !folderFilterInput || !tagFiltersNode || !folderTreeNode || !dropzone || !previewNode || !characterListNode || !chunkPreviewNode || !chunkStrategyNode || !tokenSizeNode || !preprocessPresetNode || !preprocessCustomNode || !reprocessButton || !reprocessStatusNode || !uploadVersionButton || !versionFileInput || !versionSelect || !activateVersionButton || !docFolderInput || !docTagsInput || !saveDocMetaButton || !bulkDocFolderInput || !bulkDocTagsInput || !bulkDocMode || !applyBulkDocMetaButton || !clearBulkDocSelectionButton) {
     return;
   }
 
@@ -952,7 +1138,75 @@ function initLibraryUi() {
   let assignmentCounts = new Map();
   let assignmentMap = new Map();
   let activeVersions = [];
+  const savedFilters = readLibraryFilters();
+  let selectedTagFilters = new Set(savedFilters.tags);
+  searchInput.value = savedFilters.search;
+  folderFilterInput.value = savedFilters.folder;
+  let selectedDocIds = new Set();
+  let collapsedFolderPaths = new Set();
+  let filterRenderTimer = null;
   const getActiveDoc = () => allDocs.find((item) => item.id === activeDocId) || null;
+  const persistFilters = () => {
+    writeLibraryFilters({
+      search: searchInput.value,
+      folder: folderFilterInput.value,
+      tags: Array.from(selectedTagFilters)
+    });
+  };
+
+  const renderTagFilters = () => {
+    const available = Array.from(
+      new Set(
+        allDocs.flatMap((doc) => normalizeTags(doc.tags))
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    tagFiltersNode.innerHTML = "";
+    if (!available.length) {
+      return;
+    }
+    available.forEach((tag) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = selectedTagFilters.has(tag) ? "doc-tag-chip active" : "doc-tag-chip";
+      chip.textContent = tag;
+      chip.dataset.tag = tag;
+      tagFiltersNode.appendChild(chip);
+    });
+  };
+
+  const renderFilteredDocuments = () => {
+    renderDocuments(
+      listNode,
+      allDocs,
+      searchInput.value,
+      folderFilterInput.value,
+      Array.from(selectedTagFilters),
+      assignedDocIds,
+      assignmentCounts,
+      selectedDocIds
+    );
+    renderFolderTree(folderTreeNode, allDocs, folderFilterInput.value, collapsedFolderPaths);
+  };
+
+  const scheduleFilterRender = () => {
+    if (filterRenderTimer) {
+      window.clearTimeout(filterRenderTimer);
+    }
+    filterRenderTimer = window.setTimeout(() => {
+      filterRenderTimer = null;
+      renderFilteredDocuments();
+    }, 120);
+  };
+
+  const syncDocMetaEditor = (doc) => {
+    if (!doc) {
+      docFolderInput.value = "";
+      docTagsInput.value = "";
+      return;
+    }
+    docFolderInput.value = doc.folder || "";
+    docTagsInput.value = normalizeTags(doc.tags).join(", ");
+  };
 
   const syncPreprocessControls = (doc) => {
     if (!doc) {
@@ -984,6 +1238,7 @@ function initLibraryUi() {
 
   const refresh = async () => {
     allDocs = await listDocuments();
+    selectedDocIds = new Set(Array.from(selectedDocIds).filter((docId) => allDocs.some((item) => item.id === docId)));
     const allAssignments = await listAllAssignments();
     assignmentCounts = new Map();
     allAssignments.forEach((item) => {
@@ -994,7 +1249,17 @@ function initLibraryUi() {
     const assignments = await listAssignmentsForCharacter(activeCharacterId);
     assignedDocIds = new Set(assignments.map((item) => item.docId));
     assignmentMap = new Map(assignments.map((item) => [item.docId, item]));
-    renderDocuments(listNode, allDocs, searchInput.value, assignedDocIds, assignmentCounts);
+    renderDocuments(
+      listNode,
+      allDocs,
+      searchInput.value,
+      folderFilterInput.value,
+      Array.from(selectedTagFilters),
+      assignedDocIds,
+      assignmentCounts,
+      selectedDocIds
+    );
+    renderFolderTree(folderTreeNode, allDocs, folderFilterInput.value, collapsedFolderPaths);
     renderCharacterDocuments(characterListNode, allDocs, assignedDocIds, assignmentCounts, assignmentMap);
     const active = getActiveDoc();
     activeVersions = active ? await listVersionsForDoc(active.id) : [];
@@ -1015,6 +1280,8 @@ function initLibraryUi() {
       versionSelect.value = selected;
     }
     syncPreprocessControls(active);
+    syncDocMetaEditor(active);
+    renderTagFilters();
     renderPreview(previewNode, active);
     const previewDoc = active
       ? {
@@ -1063,6 +1330,20 @@ function initLibraryUi() {
       return;
     }
 
+    if (target.classList.contains("doc-select-toggle")) {
+      const docId = target.getAttribute("data-doc-id");
+      if (!docId) {
+        return;
+      }
+      const input = target;
+      if (input instanceof HTMLInputElement && input.checked) {
+        selectedDocIds.add(docId);
+      } else {
+        selectedDocIds.delete(docId);
+      }
+      return;
+    }
+
     const row = target.closest("[data-doc-id]");
     const rowId = row ? row.getAttribute("data-doc-id") : "";
 
@@ -1100,7 +1381,134 @@ function initLibraryUi() {
   });
 
   searchInput.addEventListener("input", () => {
-    renderDocuments(listNode, allDocs, searchInput.value, assignedDocIds, assignmentCounts);
+    persistFilters();
+    scheduleFilterRender();
+  });
+
+  folderFilterInput.addEventListener("input", () => {
+    persistFilters();
+    scheduleFilterRender();
+  });
+
+  folderTreeNode.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const togglePath = target.getAttribute("data-toggle-path");
+    if (togglePath) {
+      if (collapsedFolderPaths.has(togglePath)) {
+        collapsedFolderPaths.delete(togglePath);
+      } else {
+        collapsedFolderPaths.add(togglePath);
+      }
+      renderFolderTree(folderTreeNode, allDocs, folderFilterInput.value, collapsedFolderPaths);
+      return;
+    }
+
+    const selectPath = target.getAttribute("data-folder-path");
+    if (selectPath !== null) {
+      folderFilterInput.value = selectPath;
+      persistFilters();
+      renderFilteredDocuments();
+    }
+  });
+
+  tagFiltersNode.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    const tag = String(target.getAttribute("data-tag") || "").trim().toLowerCase();
+    if (!tag) {
+      return;
+    }
+    if (selectedTagFilters.has(tag)) {
+      selectedTagFilters.delete(tag);
+    } else {
+      selectedTagFilters.add(tag);
+    }
+    persistFilters();
+    renderTagFilters();
+    scheduleFilterRender();
+  });
+
+  saveDocMetaButton.addEventListener("click", async () => {
+    const active = getActiveDoc();
+    if (!active) {
+      reprocessStatusNode.textContent = "Select a document before saving tags/folder.";
+      return;
+    }
+    const updated = await patchDocument(active.id, {
+      folder: normalizeFolder(docFolderInput.value),
+      tags: normalizeTags(docTagsInput.value)
+    });
+    if (!updated) {
+      reprocessStatusNode.textContent = "Failed to update document metadata.";
+      return;
+    }
+    const index = allDocs.findIndex((item) => item.id === updated.id);
+    if (index >= 0) {
+      allDocs[index] = updated;
+    }
+    reprocessStatusNode.textContent = `Saved tags/folder for ${updated.name}.`;
+    renderTagFilters();
+    renderDocuments(
+      listNode,
+      allDocs,
+      searchInput.value,
+      folderFilterInput.value,
+      Array.from(selectedTagFilters),
+      assignedDocIds,
+      assignmentCounts,
+      selectedDocIds
+    );
+    renderFolderTree(folderTreeNode, allDocs, folderFilterInput.value, collapsedFolderPaths);
+    renderCharacterDocuments(characterListNode, allDocs, assignedDocIds, assignmentCounts, assignmentMap);
+  });
+
+  applyBulkDocMetaButton.addEventListener("click", async () => {
+    const docIds = Array.from(selectedDocIds);
+    if (!docIds.length) {
+      reprocessStatusNode.textContent = "Select one or more docs before bulk update.";
+      return;
+    }
+    const folderValue = normalizeFolder(bulkDocFolderInput.value);
+    const incomingTags = normalizeTags(bulkDocTagsInput.value);
+    const mode = bulkDocMode.value === "replace" ? "replace" : "append";
+
+    const updates = docIds.map(async (docId) => {
+      const doc = allDocs.find((item) => item.id === docId);
+      if (!doc) {
+        return null;
+      }
+      const tags = mode === "replace"
+        ? incomingTags
+        : normalizeTags([...(doc.tags || []), ...incomingTags]);
+      const patch = { tags };
+      if (folderValue) {
+        patch.folder = folderValue;
+      }
+      return patchDocument(docId, patch);
+    });
+
+    await Promise.all(updates);
+    reprocessStatusNode.textContent = `Bulk updated ${docIds.length} document(s).`;
+    await refresh();
+  });
+
+  clearBulkDocSelectionButton.addEventListener("click", () => {
+    selectedDocIds = new Set();
+    renderDocuments(
+      listNode,
+      allDocs,
+      searchInput.value,
+      folderFilterInput.value,
+      Array.from(selectedTagFilters),
+      assignedDocIds,
+      assignmentCounts,
+      selectedDocIds
+    );
   });
 
   chunkStrategyNode.addEventListener("change", () => {
@@ -1266,6 +1674,8 @@ export async function exportDocumentMetadata() {
     preprocessPreset: String(item.preprocessPreset || "none"),
     preprocessCustom: String(item.preprocessCustom || ""),
     processedText: String(item.processedText || ""),
+    tags: normalizeTags(item.tags),
+    folder: normalizeFolder(item.folder),
     activeVersionId: String(item.activeVersionId || ""),
     lastChunkStrategy: String(item.lastChunkStrategy || "paragraph"),
     lastTokenSize: Number(item.lastTokenSize || 120),
@@ -1317,7 +1727,7 @@ export async function importDocumentMetadata(metadata) {
       if (!item || !item.id) {
         return;
       }
-      docsStore.put(item);
+      docsStore.put(normalizeDocumentRecord(item));
     });
 
     versions.forEach((item) => {
@@ -1364,6 +1774,8 @@ export async function getCharacterDocumentContext(characterId) {
       return {
         id: doc.id,
         name: doc.name,
+        tags: normalizeTags(doc.tags),
+        folder: normalizeFolder(doc.folder),
         pinnedVersionId: assignment.pinnedVersionId || "",
         activeVersionId: doc.activeVersionId || ""
       };
@@ -1384,13 +1796,204 @@ function trimForPrompt(text, limit) {
   return `${value.slice(0, limit)}...`;
 }
 
-export async function getCharacterPromptContext(characterId, maxChars) {
-  if (!characterId) {
-    return "";
+function estimateTokenCount(text) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(0, Math.round(words * 1.3));
+}
+
+function buildQueryTerms(query) {
+  return String(query || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 3)
+    .slice(0, 24);
+}
+
+function relevanceScore(doc, sourceText, terms) {
+  if (!terms.length) {
+    return 0;
+  }
+  const haystacks = [
+    String(doc && doc.name ? doc.name : "").toLowerCase(),
+    String(doc && doc.folder ? doc.folder : "").toLowerCase(),
+    normalizeTags(doc && doc.tags).join(" "),
+    String(sourceText || "").toLowerCase().slice(0, 2400)
+  ];
+  let score = 0;
+  terms.forEach((term) => {
+    if (haystacks.some((value) => value.includes(term))) {
+      score += 1;
+    }
+  });
+  return score;
+}
+
+function reportDocTelemetry(telemetry, name, value) {
+  if (!telemetry || typeof telemetry.onMetric !== "function") {
+    return;
+  }
+  telemetry.onMetric(String(name || "metric"), Number(value || 0));
+}
+
+async function rankContextEntriesWithWorker(entries, queryTerms, telemetry) {
+  if (!("Worker" in window) || !Array.isArray(entries) || entries.length < 6) {
+    return null;
   }
 
-  const perDocLimit = 1600;
-  const totalLimit = Number.isFinite(maxChars) ? Math.max(1000, Math.floor(maxChars)) : 7000;
+  const candidates = entries.map((entry) => ({
+    name: String(entry.doc && entry.doc.name ? entry.doc.name : ""),
+    folder: String(entry.doc && entry.doc.folder ? entry.doc.folder : ""),
+    tags: normalizeTags(entry.doc && entry.doc.tags),
+    sourceSnippet: String(entry.sourceText || "").slice(0, 2400),
+    recencyStamp: Number(entry.recencyStamp || 0),
+    pinned: Boolean(entry.assignment && entry.assignment.pinnedVersionId)
+  }));
+
+  let worker = null;
+  try {
+    worker = new Worker(new URL("./doc-scoring-worker.js", import.meta.url), { type: "module" });
+  } catch (error) {
+    console.warn("Document scoring worker unavailable, using main thread scoring:", error);
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    const startedAt = performance.now();
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      const elapsedMs = performance.now() - startedAt;
+      reportDocTelemetry(telemetry, "doc_rank_worker_timeout_ms", elapsedMs);
+      worker.terminate();
+      resolve(null);
+    }, DOC_SCORING_WORKER_TIMEOUT_MS);
+
+    worker.onmessage = (event) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      window.clearTimeout(timer);
+      const ranked = event && event.data && Array.isArray(event.data.ranked) ? event.data.ranked : [];
+      const elapsedMs = performance.now() - startedAt;
+      reportDocTelemetry(telemetry, "doc_rank_worker_ms", elapsedMs);
+      worker.terminate();
+      resolve({
+        ranked,
+        mode: "worker",
+        elapsedMs
+      });
+    };
+
+    worker.onerror = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      window.clearTimeout(timer);
+      const elapsedMs = performance.now() - startedAt;
+      reportDocTelemetry(telemetry, "doc_rank_worker_error_ms", elapsedMs);
+      worker.terminate();
+      resolve(null);
+    };
+
+    worker.postMessage({
+      terms: Array.isArray(queryTerms) ? queryTerms : [],
+      candidates
+    });
+  });
+}
+
+async function rankContextEntries(entries, queryTerms, telemetry) {
+  reportDocTelemetry(telemetry, "doc_rank_candidate_count", Array.isArray(entries) ? entries.length : 0);
+  const workerResult = await rankContextEntriesWithWorker(entries, queryTerms, telemetry);
+  const workerRanked = workerResult && Array.isArray(workerResult.ranked) ? workerResult.ranked : [];
+  if (workerRanked.length) {
+    return {
+      entries: workerRanked
+        .map((item) => {
+        const index = Number(item && item.index);
+        if (!Number.isInteger(index) || index < 0 || index >= entries.length) {
+          return null;
+        }
+        return {
+          ...entries[index],
+          score: Number(item && item.score ? item.score : 0)
+        };
+      })
+        .filter(Boolean),
+      rankMode: "worker",
+      rankElapsedMs: Number(workerResult.elapsedMs || 0)
+    };
+  }
+
+  const startedAt = performance.now();
+  const ranked = entries
+    .map((entry) => {
+      const pinnedBoost = entry.assignment.pinnedVersionId ? 100 : 0;
+      const relevance = relevanceScore(entry.doc, entry.sourceText, queryTerms);
+      return {
+        ...entry,
+        score: pinnedBoost + relevance
+      };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      if (b.recencyStamp !== a.recencyStamp) {
+        return b.recencyStamp - a.recencyStamp;
+      }
+      return String(a.doc.name || "").localeCompare(String(b.doc.name || ""));
+    });
+  const elapsedMs = performance.now() - startedAt;
+  reportDocTelemetry(telemetry, "doc_rank_main_ms", elapsedMs);
+  return {
+    entries: ranked,
+    rankMode: "main",
+    rankElapsedMs: elapsedMs
+  };
+}
+
+function summarizeFallback(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const sentences = raw.split(/(?<=[.!?])\s+/).filter(Boolean);
+  if (!sentences.length) {
+    return trimForPrompt(raw, 420);
+  }
+  return trimForPrompt(sentences.slice(0, 2).join(" "), 420);
+}
+
+export async function getCharacterPromptContextBundle(characterId, options) {
+  if (!characterId) {
+    return {
+      text: "",
+      usage: {
+        budgetTokens: 0,
+        reserveTokens: 0,
+        usedTokens: 0,
+        remainingTokens: 0,
+        docs: []
+      }
+    };
+  }
+
+  const tokenBudget = Number.isFinite(options && options.tokenBudget)
+    ? Math.max(600, Math.floor(options.tokenBudget))
+    : 4096;
+  const reserveTokens = Number.isFinite(options && options.reserveTokens)
+    ? Math.max(300, Math.floor(options.reserveTokens))
+    : 300;
+  const usableTokens = Math.max(200, tokenBudget - reserveTokens);
+  const telemetry = options && typeof options.telemetry === "object" ? options.telemetry : null;
+  const queryTerms = buildQueryTerms(options && options.query ? options.query : "");
   const db = await openDocumentsDb();
   const transaction = db.transaction(["associations", "docs", "versions"], "readonly");
   const assocStore = transaction.objectStore("associations");
@@ -1400,7 +2003,7 @@ export async function getCharacterPromptContext(characterId, maxChars) {
   const assignments = await requestToPromise(assocIndex.getAll(characterId));
   const rows = Array.isArray(assignments) ? assignments : [];
 
-  const sections = [];
+  const entries = [];
   for (const assignment of rows) {
     const doc = await requestToPromise(docsStore.get(assignment.docId));
     if (!doc) {
@@ -1416,15 +2019,119 @@ export async function getCharacterPromptContext(characterId, maxChars) {
     if (!sourceText) {
       sourceText = String(doc.processedText || doc.extractedText || "");
     }
-    const snippet = trimForPrompt(sourceText, perDocLimit);
-    if (!snippet) {
+    if (!String(sourceText || "").trim()) {
       continue;
     }
-    sections.push(`Document: ${doc.name}\n${snippet}`);
+    const recencyStamp = Date.parse(String(doc.updatedAt || doc.createdAt || "")) || 0;
+    entries.push({
+      doc,
+      assignment,
+      sourceText: String(sourceText || ""),
+      recencyStamp
+    });
   }
 
-  const joined = sections.join("\n\n---\n\n");
-  return trimForPrompt(joined, totalLimit);
+  const rankResult = await rankContextEntries(entries, queryTerms, telemetry);
+  const rankedEntries = Array.isArray(rankResult && rankResult.entries) ? rankResult.entries : [];
+  if (rankResult && rankResult.rankMode) {
+    reportDocTelemetry(telemetry, "doc_rank_elapsed_ms", Number(rankResult.rankElapsedMs || 0));
+  }
+
+  const sections = [];
+  const docUsages = [];
+  let usedTokens = 0;
+
+  for (const entry of rankedEntries) {
+    const header = `Document: ${entry.doc.name}`;
+    const headerTokens = estimateTokenCount(header) + 1;
+    const remainingBefore = usableTokens - usedTokens;
+    if (remainingBefore <= headerTokens + 24) {
+      break;
+    }
+
+    const perDocBudget = Math.max(
+      40,
+      Math.min(
+        Math.floor(usableTokens * 0.45),
+        Math.floor((remainingBefore - headerTokens) * 0.9)
+      )
+    );
+    const fullText = String(entry.sourceText || "");
+    const fullTokens = estimateTokenCount(fullText);
+    let method = "full";
+    let selected = fullText;
+
+    if (fullTokens > perDocBudget) {
+      const approxChars = Math.max(160, perDocBudget * 4);
+      selected = trimForPrompt(fullText, approxChars);
+      method = "truncated";
+      const truncatedTokens = estimateTokenCount(selected);
+      if (truncatedTokens > perDocBudget) {
+        selected = summarizeFallback(fullText);
+        method = "summary";
+      }
+    }
+
+    if (!selected) {
+      continue;
+    }
+
+    const section = `${header}\n${selected}`;
+    const sectionTokens = estimateTokenCount(section);
+    if (usedTokens + sectionTokens > usableTokens) {
+      const fallback = summarizeFallback(fullText);
+      if (!fallback) {
+        continue;
+      }
+      const fallbackSection = `${header}\n${fallback}`;
+      const fallbackTokens = estimateTokenCount(fallbackSection);
+      if (usedTokens + fallbackTokens > usableTokens) {
+        continue;
+      }
+      sections.push(fallbackSection);
+      usedTokens += fallbackTokens;
+      docUsages.push({
+        id: entry.doc.id,
+        name: entry.doc.name,
+        method: "summary",
+        usedTokens: fallbackTokens,
+        pinned: Boolean(entry.assignment.pinnedVersionId),
+        score: entry.score
+      });
+      continue;
+    }
+
+    sections.push(section);
+    usedTokens += sectionTokens;
+    docUsages.push({
+      id: entry.doc.id,
+      name: entry.doc.name,
+      method,
+      usedTokens: sectionTokens,
+      pinned: Boolean(entry.assignment.pinnedVersionId),
+      score: entry.score
+    });
+  }
+
+  return {
+    text: sections.join("\n\n---\n\n"),
+    usage: {
+      budgetTokens: tokenBudget,
+      reserveTokens,
+      usedTokens,
+      remainingTokens: Math.max(0, usableTokens - usedTokens),
+      docs: docUsages
+    }
+  };
+}
+
+export async function getCharacterPromptContext(characterId, maxChars) {
+  const max = Number.isFinite(maxChars) ? Math.max(1000, Math.floor(maxChars)) : 7000;
+  const bundle = await getCharacterPromptContextBundle(characterId, {
+    tokenBudget: Math.max(1500, Math.floor(max / 4) + 300),
+    reserveTokens: 300
+  });
+  return trimForPrompt(bundle.text, max);
 }
 
 export function initDocuments() {
